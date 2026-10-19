@@ -1,0 +1,61 @@
+CONTROLE DE RELE ESP8266 - Firebase Streaming (SSE) - firmware de teste robustecido
+
+Requisitos:
+- Arduino IDE: placa ESP8266
+- Bibliotecas: FirebaseClient (Mobizt), ArduinoJson 7
+- ESP8266 core instalado
+- Os dois arquivos ControleReleESP8266.ino e FirebaseCA.h devem ficar na MESMA pasta.
+- Em ControleReleESP8266.ino preencher SSID, senha Wi-Fi, API KEY,
+  e-mail/senha do usuario ESP e DATABASE_URL (copie exatamente do Firebase).
+
+Hardware:
+- GPIO5 (D1): pino IN do modulo rele ACTIVE LOW. Ao iniciar, nivel HIGH.
+- Confirmar se o modulo aceita nivel logico 3,3V. Fonte adequada.
+- Testar primeiro SEM carga na saida do rele.
+- Para cargas perigosas, adicionar intertravamento/sistema independente.
+
+Banco esperado:
+relay/command: { id: string, enabled: bool, durationMinutes: int, createdAt: number }
+relay/state: { enabled: bool, lastCommandId: string, expiresAt: number }
+
+SEGURANCA DO COMANDO:
+- O primeiro snapshot SSE apos ligar apenas sincroniza o ID. Rele permanece OFF.
+- ID novo aciona comando. Repeticao do mesmo ID nao reexecuta.
+- Liga apenas com createdAt valido (epoch UNIX em MILISSEGUNDOS).
+- Comando liga e ignorado se tiver mais de 120s de idade ou se expirou.
+- Desligar e aceito mesmo quando o timestamp for antigo.
+- Depois do reset ou falta de energia o rele nao religa ate chegar novo ID.
+- Durante falha de rede o temporizador LOCAL via millis() continua contando.
+- So a recepcao do comando depende de internet.
+
+COMO TESTAR MANUALMENTE NO FIREBASE:
+1. Obtenha o timestamp em MILISSEGUNDOS digitando Date.now() no console JavaScript do navegador.
+2. Altere relay/command/durationMinutes -> 1
+3. Altere relay/command/enabled -> true
+4. Altere relay/command/createdAt -> numero obtido em Date.now() (sem aspas)
+5. Altere relay/command/id -> "teste-4" (um ID NOVO, por ultimo)
+6. O rele deve ligar, desligar em cerca de 1 min, e atualizar relay/state.
+OBS: os 120s sao contados desde createdAt, atualize o numero quando testar.
+
+TESTES IMPORTANTES:
+- Religue o ESP8266 com ultimo comando enabled=true: deve iniciar OFF.
+- Ligue por 1 minuto e desconecte roteador: deve desligar no fim do minuto.
+- Restabeleca Wi-Fi: deve reconectar e publicar estado real.
+- Mude somente enabled/durationMinutes sem mudar id: nao deve acionar.
+- Mude id para um ID novo com createdAt anterior >2 min: deve rejeitar ON.
+
+TLS:
+- Configurado com CAs publicas GTS Root R1/R3/R4 obtidas de armazenamento Mozilla.
+- BearSSL checa cadeia + data do certificado; exige NTP antes do inicio.
+- Se Google/Firebase mudar cadeia, pode ser necessario atualizar FirebaseCA.h.
+- O certificado nao e segredo. Chaves e senhas nao devem ser divulgadas.
+- NAO voltar a setInsecure(): isso remove a verificacao TLS.
+
+LIMITACOES:
+- Codigo nao foi compilado nem executado no seu ESP8266 daqui.
+- Para uso critico, precisar validar cenarios de rede e de fonte/relé in loco.
+- O protocolo nao garante execucao de todos os comandos enviados quando offline:
+  ao reconectar, compara o ultimo comando conhecido e descarta ON atrasados.
+- Um comando emitido antes do primeiro snapshot ao ligar pode ser ignorado;
+  retransmita se o state.lastCommandId nao confirmar a execucao.
+- Para relé de carga perigosa, firmar fail-safe por hardware.
