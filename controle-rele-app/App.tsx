@@ -1,14 +1,21 @@
+import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { NavigationBar } from "expo-navigation-bar";
+import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import {
 	ActivityIndicator,
+	KeyboardAvoidingView,
+	Platform,
 	Pressable,
-	SafeAreaView,
-	ScrollView,
+	Modal,
+	useWindowDimensions,
 	StyleSheet,
 	Text,
 	TextInput,
 	View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
 	onAuthStateChanged,
@@ -16,9 +23,7 @@ import {
 	signOut,
 	type User,
 } from "firebase/auth";
-
 import { onValue, push, ref, set } from "firebase/database";
-
 import { auth, database } from "./firebase/config";
 
 type RelayState = {
@@ -28,41 +33,65 @@ type RelayState = {
 	lastSeenAt?: number;
 };
 
-const HEARTBEAT_TIMEOUT_MS = 90000;
+const COLORS = {
+	background: "#08131E",
+	surface: "#112432",
+	surface2: "#152C3C",
+	border: "#294251",
+	white: "#F4F8FB",
+	muted: "#95ACB9",
+	accent: "#55E1C2",
+	accentDark: "#052D2A",
+	red: "#FF8F8F",
+};
+
+// Para heartbeat a cada 30 segundos, dê margem a atrasos de rede.
+// Se o firmware publicar a cada 15 s, você pode usar 35000.
+const HEARTBEAT_TIMEOUT_MS = 60000;
 const DURATIONS = [0, 10, 20, 30, 40, 50, 60];
 
 function formatTime(seconds: number) {
-	const minutes = Math.floor(seconds / 60);
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
 	const remaining = seconds % 60;
+	const mm = String(minutes).padStart(2, "0");
+	const ss = String(remaining).padStart(2, "0");
 
-	return `${String(minutes).padStart(2, "0")}:${String(remaining).padStart(
-		2,
-		"0",
-	)}`;
+	return hours > 0
+		? `${String(hours).padStart(2, "0")}:${mm}:${ss}`
+		: `${mm}:${ss}`;
 }
 
 export default function App() {
 	const [user, setUser] = useState<User | null>(null);
 	const [authLoading, setAuthLoading] = useState(true);
-
 	const [email, setEmail] = useState("");
 	const [password, setPassword] = useState("");
 
 	const [relay, setRelay] = useState<RelayState | null>(null);
-
 	const [connected, setConnected] = useState(false);
 	const [serverOffset, setServerOffset] = useState(0);
 	const [offsetReady, setOffsetReady] = useState(false);
-
 	const [now, setNow] = useState(Date.now());
-	const [duration, setDuration] = useState("30");
 
+	const [duration, setDuration] = useState("30");
 	const [busy, setBusy] = useState(false);
 	const [pendingId, setPendingId] = useState<string | null>(null);
-
 	const [error, setError] = useState("");
+	const [customOpen, setCustomOpen] = useState(false);
+	const [customValue, setCustomValue] = useState("30");
+	const { height } = useWindowDimensions();
+	const compact = height < 780;
+	const veryCompact = height < 670;
 
-	// Autenticação
+	// Android: oculta apenas a barra de navegação inferior.
+	// A barra superior (hora e bateria) continua visível.
+	useEffect(() => {
+		if (Platform.OS === "android") {
+			NavigationBar.setHidden(true);
+		}
+	}, []);
+
 	useEffect(() => {
 		return onAuthStateChanged(auth, (currentUser) => {
 			setUser(currentUser);
@@ -70,16 +99,11 @@ export default function App() {
 		});
 	}, []);
 
-	// Relógio da interface
 	useEffect(() => {
-		const interval = setInterval(() => {
-			setNow(Date.now());
-		}, 1000);
-
+		const interval = setInterval(() => setNow(Date.now()), 1000);
 		return () => clearInterval(interval);
 	}, []);
 
-	// Firebase em tempo real
 	useEffect(() => {
 		if (!user) {
 			setRelay(null);
@@ -90,26 +114,19 @@ export default function App() {
 
 		const unsubscribeState = onValue(
 			ref(database, "relay/state"),
-			(snapshot) => {
-				setRelay(snapshot.val() as RelayState | null);
-			},
+			(snapshot) => setRelay(snapshot.val() as RelayState | null),
 			(err) => setError(err.message),
 		);
-
 		const unsubscribeConnection = onValue(
 			ref(database, ".info/connected"),
-			(snapshot) => {
-				setConnected(snapshot.val() === true);
-			},
+			(snapshot) => setConnected(snapshot.val() === true),
 		);
-
 		const unsubscribeOffset = onValue(
 			ref(database, ".info/serverTimeOffset"),
 			(snapshot) => {
-				const offset = snapshot.val();
-
-				if (typeof offset === "number") {
-					setServerOffset(offset);
+				const value = snapshot.val();
+				if (typeof value === "number") {
+					setServerOffset(value);
 					setOffsetReady(true);
 				}
 			},
@@ -122,7 +139,6 @@ export default function App() {
 		};
 	}, [user]);
 
-	// Confirmação de recebimento do comando
 	useEffect(() => {
 		if (pendingId && relay?.lastCommandId === pendingId) {
 			setPendingId(null);
@@ -131,44 +147,44 @@ export default function App() {
 
 	useEffect(() => {
 		if (!pendingId) return;
-
 		const timeout = setTimeout(() => {
 			setPendingId(null);
-			setError("O dispositivo não confirmou o recebimento do comando.");
+			setError("O dispositivo não confirmou o comando.");
 		}, 20000);
-
 		return () => clearTimeout(timeout);
 	}, [pendingId]);
 
 	const serverNow = now + serverOffset;
-
-	const lastSeen = relay?.lastSeenAt;
 	const heartbeatAge =
-		typeof lastSeen === "number" ? serverNow - lastSeen : Infinity;
-
+		typeof relay?.lastSeenAt === "number"
+			? serverNow - relay.lastSeenAt
+			: Infinity;
 	const online =
 		connected &&
 		offsetReady &&
 		heartbeatAge >= -10000 &&
 		heartbeatAge < HEARTBEAT_TIMEOUT_MS;
 
+	const isOn = relay?.enabled === true;
+	const hasTimer = isOn && (relay?.expiresAt ?? 0) > 0;
 	const remainingSeconds = Math.max(
 		0,
 		Math.ceil(((relay?.expiresAt ?? 0) - serverNow) / 1000),
 	);
-
-	const hasTimer = relay?.enabled === true && (relay.expiresAt ?? 0) > 0;
-
 	const canSend = online && !busy && !pendingId;
+	const selectedMinutes = Number(duration.trim());
+	const durationValid =
+		/^\d+$/.test(duration.trim()) &&
+		selectedMinutes >= 0 &&
+		selectedMinutes <= 1440;
 
 	async function login() {
 		setError("");
 		setBusy(true);
-
 		try {
 			await signInWithEmailAndPassword(auth, email.trim(), password);
-		} catch (err) {
-			setError("Não foi possível entrar. Confira os dados.");
+		} catch {
+			setError("Não foi possível entrar. Confira o e-mail e a senha.");
 		} finally {
 			setBusy(false);
 		}
@@ -176,36 +192,28 @@ export default function App() {
 
 	async function sendCommand(enabled: boolean) {
 		if (!canSend) return;
-
-		const minutes = enabled ? Number(duration.trim()) : 0;
-
-		if (
-			enabled &&
-			(!/^\d+$/.test(duration.trim()) || minutes < 0 || minutes > 1440)
-		) {
+		if (enabled && !durationValid) {
 			setError("Informe um tempo entre 0 e 1440 minutos.");
 			return;
 		}
 
 		const id = push(ref(database, "relay/command")).key;
-
 		if (!id) {
-			setError("Não foi possível gerar o ID do comando.");
+			setError("Não foi possível gerar o comando.");
 			return;
 		}
 
 		setBusy(true);
-		setError("");
 		setPendingId(id);
-
+		setError("");
 		try {
 			await set(ref(database, "relay/command"), {
 				id,
 				enabled,
-				durationMinutes: minutes,
+				durationMinutes: enabled ? selectedMinutes : 0,
 				createdAt: Math.round(Date.now() + serverOffset),
 			});
-		} catch (err) {
+		} catch {
 			setPendingId(null);
 			setError("Falha ao enviar comando ao Firebase.");
 		} finally {
@@ -213,329 +221,819 @@ export default function App() {
 		}
 	}
 
+	function openCustomTime() {
+		setCustomValue(duration);
+		setCustomOpen(true);
+	}
+
+	function saveCustomTime() {
+		if (!/^\d+$/.test(customValue.trim()) || Number(customValue) > 1440) {
+			setError("Informe de 0 a 1440 minutos.");
+			return;
+		}
+		setError("");
+		setDuration(String(Number(customValue)));
+		setCustomOpen(false);
+	}
+
 	if (authLoading) {
 		return (
-			<View style={styles.center}>
-				<ActivityIndicator size="large" />
-			</View>
+			<SafeAreaView style={styles.screen}>
+				<StatusBar style="light" />
+				<View style={styles.center}>
+					<ActivityIndicator size="large" color={COLORS.accent} />
+				</View>
+			</SafeAreaView>
 		);
 	}
 
 	if (!user) {
 		return (
 			<SafeAreaView style={styles.screen}>
-				<View style={styles.login}>
-					<Text style={styles.title}>Controle do relé</Text>
-					<Text style={styles.subtitle}>
-						Entre com sua conta do Firebase
-					</Text>
-
-					<TextInput
-						style={styles.input}
-						placeholder="E-mail"
-						autoCapitalize="none"
-						keyboardType="email-address"
-						value={email}
-						onChangeText={setEmail}
-					/>
-
-					<TextInput
-						style={styles.input}
-						placeholder="Senha"
-						secureTextEntry
-						value={password}
-						onChangeText={setPassword}
-					/>
-
-					<Pressable
-						style={styles.primaryButton}
-						onPress={login}
-						disabled={busy}
-					>
-						<Text style={styles.primaryButtonText}>
-							{busy ? "Entrando..." : "Entrar"}
+				<StatusBar style="light" />
+				<KeyboardAvoidingView
+					style={styles.center}
+					behavior={Platform.OS === "ios" ? "padding" : undefined}
+				>
+					<View style={styles.loginContainer}>
+						<View style={styles.loginIcon}>
+							<Ionicons
+								name="flash-outline"
+								size={33}
+								color={COLORS.accent}
+							/>
+						</View>
+						<Text style={styles.eyebrow}>BEM-VINDO</Text>
+						<Text style={styles.loginTitle}>
+							Sua tomada,{"\n"}sob controle.
 						</Text>
-					</Pressable>
+						<Text style={styles.subtitle}>
+							Entre para controlar seu dispositivo de qualquer
+							lugar.
+						</Text>
 
-					{!!error && <Text style={styles.error}>{error}</Text>}
-				</View>
+						<View style={styles.loginFields}>
+							<TextInput
+								style={styles.input}
+								placeholder="E-mail"
+								placeholderTextColor={COLORS.muted}
+								autoCapitalize="none"
+								autoCorrect={false}
+								keyboardType="email-address"
+								value={email}
+								onChangeText={setEmail}
+							/>
+							<TextInput
+								style={styles.input}
+								placeholder="Senha"
+								placeholderTextColor={COLORS.muted}
+								secureTextEntry
+								value={password}
+								onChangeText={setPassword}
+								onSubmitEditing={login}
+							/>
+						</View>
+
+						<Pressable
+							onPress={login}
+							disabled={busy}
+							style={({ pressed }) => [
+								styles.loginButton,
+								(busy || pressed) && styles.buttonDimmed,
+							]}
+						>
+							{busy ? (
+								<ActivityIndicator color={COLORS.accentDark} />
+							) : (
+								<>
+									<Text style={styles.loginButtonText}>
+										Entrar
+									</Text>
+									<Ionicons
+										name="arrow-forward"
+										size={19}
+										color={COLORS.accentDark}
+									/>
+								</>
+							)}
+						</Pressable>
+						{!!error && (
+							<Text style={styles.errorText}>{error}</Text>
+						)}
+					</View>
+				</KeyboardAvoidingView>
 			</SafeAreaView>
 		);
 	}
 
 	return (
-		<SafeAreaView style={styles.screen}>
-			<ScrollView
-				contentContainerStyle={styles.container}
-				keyboardShouldPersistTaps="handled"
+		<SafeAreaView style={styles.screen} edges={["top"]}>
+			<StatusBar style="light" />
+			<View
+				style={[styles.dashboard, veryCompact && styles.dashboardTiny]}
 			>
-				<View style={styles.header}>
-					<Text style={styles.title}>Controle do relé</Text>
+				<View style={styles.topBar}>
+					<View>
+						{!veryCompact && (
+							<Text style={styles.eyebrow}>CASA CONECTADA</Text>
+						)}
+						<Text
+							style={[
+								styles.title,
+								veryCompact && styles.titleTiny,
+							]}
+						>
+							Minha tomada
+						</Text>
+					</View>
+					<Pressable
+						onPress={() => signOut(auth)}
+						accessibilityRole="button"
+						accessibilityLabel="Sair da conta"
+						style={styles.iconButton}
+					>
+						<Ionicons
+							name="log-out-outline"
+							size={20}
+							color={COLORS.muted}
+						/>
+					</Pressable>
+				</View>
 
+				<View style={styles.onlineRow}>
+					<View
+						style={[
+							styles.dot,
+							{
+								backgroundColor: online
+									? COLORS.accent
+									: COLORS.red,
+							},
+						]}
+					/>
 					<Text
 						style={[
-							styles.status,
-							{ color: online ? "#16803d" : "#b42318" },
+							styles.presenceText,
+							{ color: online ? COLORS.accent : COLORS.red },
 						]}
 					>
-						{online
-							? "● Dispositivo online"
-							: "● Dispositivo offline"}
+						{online ? "Dispositivo online" : "Dispositivo offline"}
 					</Text>
+					<View style={{ flex: 1 }} />
+					<Ionicons
+						name={online ? "wifi" : "cloud-offline-outline"}
+						size={17}
+						color={online ? COLORS.accent : COLORS.red}
+					/>
 				</View>
 
-				<View style={styles.card}>
-					<Text style={styles.cardLabel}>ESTADO ATUAL</Text>
+				<LinearGradient
+					colors={
+						isOn
+							? ["#173E39", "#102A34", "#0E202D"]
+							: ["#173544", "#112A39", "#0D1F2C"]
+					}
+					start={{ x: 0, y: 0 }}
+					end={{ x: 1, y: 1 }}
+					style={[
+						styles.mainPanel,
+						veryCompact && styles.mainPanelTiny,
+					]}
+				>
+					<View style={styles.heroHeader}>
+						<Text style={styles.heroEyebrow}>ESTADO DO RELÉ</Text>
+						<Ionicons
+							name="hardware-chip-outline"
+							size={18}
+							color={COLORS.muted}
+						/>
+					</View>
 
-					<Text style={styles.relayStatus}>
-						{relay === null
-							? "Aguardando..."
-							: relay.enabled
-								? "Ligado"
-								: "Desligado"}
-					</Text>
-
-					<Text style={styles.subtitle}>
-						{hasTimer
-							? `Tempo restante: ${formatTime(remainingSeconds)}`
-							: relay?.enabled
-								? "Sem temporizador"
-								: "Relé desligado"}
-					</Text>
-
-					{!online && (
-						<Text style={styles.warning}>
-							Exibindo o último estado conhecido.
+					<View
+						style={[
+							styles.heroBody,
+							veryCompact && styles.heroBodyTiny,
+						]}
+					>
+						<View
+							style={[
+								styles.powerOuter,
+								compact && styles.powerOuterCompact,
+								isOn && styles.powerOuterOn,
+							]}
+						>
+							<View
+								style={[
+									styles.powerInner,
+									compact && styles.powerInnerCompact,
+									isOn && styles.powerInnerOn,
+								]}
+							>
+								<Ionicons
+									name="power"
+									size={compact ? 43 : 52}
+									color={
+										isOn ? COLORS.accentDark : COLORS.muted
+									}
+								/>
+							</View>
+						</View>
+						<Text
+							style={[
+								styles.heroState,
+								veryCompact && styles.heroStateTiny,
+							]}
+						>
+							{relay === null
+								? "Aguardando"
+								: isOn
+									? "Ligado"
+									: "Desligado"}
 						</Text>
-					)}
-				</View>
+						<Text style={styles.heroSubtitle} numberOfLines={2}>
+							{!online
+								? "Último estado conhecido"
+								: hasTimer
+									? "Desligamento programado"
+									: isOn
+										? "Ligado sem limite"
+										: "Pronto para ligar"}
+						</Text>
+						{hasTimer && (
+							<View
+								style={[
+									styles.countdownBar,
+									veryCompact && styles.countdownBarTiny,
+								]}
+							>
+								<Ionicons
+									name="time-outline"
+									size={18}
+									color={COLORS.accent}
+								/>
+								<Text
+									style={[
+										styles.countdownNumber,
+										veryCompact &&
+											styles.countdownNumberTiny,
+									]}
+								>
+									{formatTime(remainingSeconds)}
+								</Text>
+								<Text style={styles.countdownCaption}>
+									restantes
+								</Text>
+							</View>
+						)}
+					</View>
 
-				<View style={styles.card}>
-					<Text style={styles.sectionTitle}>
-						Tempo de funcionamento
-					</Text>
-
-					<View style={styles.chips}>
-						{DURATIONS.map((minutes) => (
+					<View
+						style={[
+							styles.timerSection,
+							veryCompact && styles.timerSectionTiny,
+						]}
+					>
+						<View style={styles.timerHeader}>
+							<View style={styles.timerHeaderTitle}>
+								<Ionicons
+									name="timer-outline"
+									size={19}
+									color={COLORS.accent}
+								/>
+								<Text style={styles.sectionTitle}>
+									Temporizador
+								</Text>
+							</View>
+							<Text style={styles.sectionCaption}>
+								em minutos
+							</Text>
+						</View>
+						<View style={styles.chips}>
+							{DURATIONS.map((minutes) => {
+								const selected = duration === String(minutes);
+								return (
+									<Pressable
+										key={minutes}
+										accessibilityRole="button"
+										accessibilityState={{ selected }}
+										onPress={() =>
+											setDuration(String(minutes))
+										}
+										style={[
+											styles.chip,
+											veryCompact && styles.chipTiny,
+											selected && styles.chipSelected,
+										]}
+									>
+										<Text
+											style={[
+												styles.chipText,
+												selected &&
+													styles.chipTextSelected,
+											]}
+										>
+											{minutes === 0
+												? "Sempre"
+												: `${minutes} min`}
+										</Text>
+									</Pressable>
+								);
+							})}
 							<Pressable
-								key={minutes}
+								accessibilityRole="button"
+								accessibilityLabel="Definir tempo personalizado"
+								onPress={openCustomTime}
 								style={[
 									styles.chip,
-									duration === String(minutes) &&
+									veryCompact && styles.chipTiny,
+									!DURATIONS.includes(Number(duration)) &&
 										styles.chipSelected,
 								]}
-								onPress={() => setDuration(String(minutes))}
 							>
 								<Text
 									style={[
 										styles.chipText,
-										duration === String(minutes) &&
+										!DURATIONS.includes(Number(duration)) &&
 											styles.chipTextSelected,
 									]}
+									numberOfLines={1}
 								>
-									{minutes === 0
-										? "Sempre"
-										: `${minutes} min`}
+									{!DURATIONS.includes(Number(duration))
+										? `${duration} min`
+										: "Outro…"}
 								</Text>
 							</Pressable>
-						))}
+						</View>
 					</View>
+				</LinearGradient>
 
-					<Text style={styles.fieldLabel}>
-						Ou informe o tempo em minutos (0 = sem limite)
-					</Text>
+				<View style={styles.actionDock}>
+					<View style={styles.feedback}>
+						{pendingId ? (
+							<>
+								<ActivityIndicator
+									size="small"
+									color={COLORS.accent}
+								/>
+								<Text
+									style={styles.feedbackText}
+									numberOfLines={2}
+								>
+									Aguardando confirmação do ESP8266...
+								</Text>
+							</>
+						) : error ? (
+							<>
+								<Ionicons
+									name="alert-circle-outline"
+									size={16}
+									color={COLORS.red}
+								/>
+								<Text
+									style={[
+										styles.feedbackText,
+										{ color: COLORS.red },
+									]}
+									numberOfLines={2}
+								>
+									{error}
+								</Text>
+							</>
+						) : (
+							<>
+								<Ionicons
+									name="radio-outline"
+									size={15}
+									color={COLORS.muted}
+								/>
+								<Text
+									style={styles.feedbackText}
+									numberOfLines={1}
+								>
+									{Number.isFinite(heartbeatAge)
+										? `Último sinal há ${Math.max(0, Math.floor(heartbeatAge / 1000))} s`
+										: "Aguardando sinal do dispositivo"}
+								</Text>
+							</>
+						)}
+					</View>
+					<View style={styles.actions}>
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel={
+								isOn
+									? "Atualizar tempo do relé"
+									: "Ligar o relé"
+							}
+							disabled={!canSend}
+							onPress={() => sendCommand(true)}
+							style={({ pressed }) => [
+								styles.onButton,
+								(!canSend || pressed) && styles.buttonDimmed,
+							]}
+						>
+							<Ionicons
+								name="power"
+								size={21}
+								color={COLORS.accentDark}
+							/>
+							<Text style={styles.onButtonText}>
+								{isOn ? "Atualizar" : "Ligar"}
+							</Text>
+						</Pressable>
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel="Desligar o relé"
+							disabled={!canSend}
+							onPress={() => sendCommand(false)}
+							style={({ pressed }) => [
+								styles.offButton,
+								(!canSend || pressed) && styles.buttonDimmed,
+							]}
+						>
+							<Ionicons
+								name="stop-circle-outline"
+								size={21}
+								color={COLORS.white}
+							/>
+							<Text style={styles.offButtonText}>Desligar</Text>
+						</Pressable>
+					</View>
+				</View>
+			</View>
 
-					<TextInput
-						style={styles.input}
-						value={duration}
-						onChangeText={setDuration}
-						keyboardType="number-pad"
-						placeholder="Minutos"
+			<Modal
+				transparent
+				animationType="fade"
+				visible={customOpen}
+				onRequestClose={() => setCustomOpen(false)}
+			>
+				<KeyboardAvoidingView
+					style={styles.modalOverlay}
+					behavior={Platform.OS === "ios" ? "padding" : undefined}
+				>
+					<Pressable
+						style={StyleSheet.absoluteFill}
+						onPress={() => setCustomOpen(false)}
 					/>
-				</View>
-
-				<View style={styles.actions}>
-					<Pressable
-						style={[
-							styles.primaryButton,
-							styles.actionButton,
-							!canSend && styles.disabled,
-						]}
-						disabled={!canSend}
-						onPress={() => sendCommand(true)}
-					>
-						<Text style={styles.primaryButtonText}>Ligar</Text>
-					</Pressable>
-
-					<Pressable
-						style={[
-							styles.offButton,
-							styles.actionButton,
-							!canSend && styles.disabled,
-						]}
-						disabled={!canSend}
-						onPress={() => sendCommand(false)}
-					>
-						<Text style={styles.offButtonText}>Desligar</Text>
-					</Pressable>
-				</View>
-
-				{!!pendingId && (
-					<Text style={styles.subtitle}>
-						Comando enviado. Aguardando dispositivo...
-					</Text>
-				)}
-
-				{!!error && <Text style={styles.error}>{error}</Text>}
-
-				<Pressable onPress={() => signOut(auth)} style={styles.logout}>
-					<Text style={styles.logoutText}>Sair da conta</Text>
-				</Pressable>
-			</ScrollView>
+					<View style={styles.modalCard}>
+						<Text style={styles.modalTitle}>
+							Tempo personalizado
+						</Text>
+						<Text style={styles.modalDescription}>
+							Escolha de 0 a 1440 minutos. Zero significa sem
+							limite.
+						</Text>
+						<TextInput
+							autoFocus
+							style={styles.modalInput}
+							value={customValue}
+							onChangeText={setCustomValue}
+							keyboardType="number-pad"
+							maxLength={4}
+							selectTextOnFocus
+							placeholder="Minutos"
+							placeholderTextColor={COLORS.muted}
+						/>
+						<View style={styles.modalButtons}>
+							<Pressable
+								onPress={() => setCustomOpen(false)}
+								style={styles.modalCancel}
+							>
+								<Text style={styles.modalCancelText}>
+									Cancelar
+								</Text>
+							</Pressable>
+							<Pressable
+								onPress={saveCustomTime}
+								style={styles.modalSave}
+							>
+								<Text style={styles.modalSaveText}>
+									Confirmar
+								</Text>
+							</Pressable>
+						</View>
+					</View>
+				</KeyboardAvoidingView>
+			</Modal>
 		</SafeAreaView>
 	);
 }
 
 const styles = StyleSheet.create({
-	screen: {
+	screen: { flex: 1, backgroundColor: COLORS.background },
+	center: { flex: 1, justifyContent: "center", alignItems: "center" },
+	dashboard: {
 		flex: 1,
-		backgroundColor: "#f5f6f8",
+		paddingHorizontal: 18,
+		paddingTop: 10,
+		paddingBottom: 12,
+		gap: 12,
 	},
-	container: {
-		padding: 24,
-		gap: 20,
-	},
-	center: {
+	// Um único painel flexível ocupa o espaço útil sem criar vazios entre cartões.
+	mainPanel: {
 		flex: 1,
+		minHeight: 0,
+		borderRadius: 22,
+		borderWidth: 1,
+		borderColor: COLORS.border,
+		padding: 16,
+		gap: 10,
+		overflow: "hidden",
+	},
+	mainPanelTiny: { padding: 11, gap: 5 },
+	heroBody: {
+		flex: 1,
+		minHeight: 0,
+		alignItems: "center",
 		justifyContent: "center",
+		gap: 7,
+	},
+	heroBodyTiny: { gap: 3 },
+	timerSection: {
+		borderTopWidth: 1,
+		borderTopColor: COLORS.border,
+		paddingTop: 13,
+		gap: 10,
+	},
+	timerSectionTiny: { paddingTop: 8, gap: 6 },
+	topBar: {
+		flexDirection: "row",
+		justifyContent: "space-between",
 		alignItems: "center",
 	},
-	login: {
-		flex: 1,
-		justifyContent: "center",
-		padding: 24,
-		gap: 16,
-	},
-	header: {
-		gap: 8,
-		marginTop: 20,
+	eyebrow: {
+		color: COLORS.accent,
+		fontSize: 10,
+		fontWeight: "800",
+		letterSpacing: 1.8,
 	},
 	title: {
-		fontSize: 28,
-		fontWeight: "700",
-		color: "#172033",
+		color: COLORS.white,
+		fontSize: 26,
+		fontWeight: "800",
+		marginTop: 2,
+		letterSpacing: -0.7,
 	},
-	subtitle: {
-		fontSize: 14,
-		color: "#697386",
+	titleTiny: { fontSize: 23, marginTop: 0 },
+	iconButton: {
+		height: 38,
+		width: 38,
+		borderRadius: 13,
+		backgroundColor: COLORS.surface,
+		borderWidth: 1,
+		borderColor: COLORS.border,
+		alignItems: "center",
+		justifyContent: "center",
 	},
-	status: {
-		fontSize: 14,
-		fontWeight: "600",
+	onlineRow: {
+		flexDirection: "row",
+		alignItems: "center",
+		gap: 7,
+		paddingVertical: 2,
 	},
-	card: {
-		padding: 22,
-		gap: 14,
-		backgroundColor: "#ffffff",
-		borderRadius: 18,
+	dot: { width: 8, height: 8, borderRadius: 4 },
+	presenceText: { fontSize: 12, fontWeight: "700" },
+
+	heroHeader: {
+		flexDirection: "row",
+		justifyContent: "space-between",
+		alignItems: "center",
 	},
-	cardLabel: {
-		fontSize: 12,
-		fontWeight: "600",
-		color: "#8893a5",
-		letterSpacing: 1,
+	heroEyebrow: {
+		color: COLORS.muted,
+		fontSize: 10,
+		fontWeight: "800",
+		letterSpacing: 1.3,
 	},
-	relayStatus: {
-		fontSize: 38,
-		fontWeight: "700",
-		color: "#172033",
+	powerOuter: {
+		width: 126,
+		height: 126,
+		borderRadius: 63,
+		borderWidth: 1,
+		borderColor: "#355363",
+		alignItems: "center",
+		justifyContent: "center",
 	},
-	sectionTitle: {
-		fontSize: 17,
-		fontWeight: "600",
-		color: "#172033",
+	powerOuterCompact: { width: 108, height: 108, borderRadius: 54 },
+	powerOuterOn: { borderColor: "#408C7A" },
+	powerInner: {
+		width: 100,
+		height: 100,
+		borderRadius: 50,
+		backgroundColor: "#2B4957",
+		alignItems: "center",
+		justifyContent: "center",
 	},
+	powerInnerCompact: { width: 88, height: 88, borderRadius: 44 },
+	powerInnerOn: { backgroundColor: COLORS.accent },
+	heroState: {
+		color: COLORS.white,
+		fontSize: 35,
+		fontWeight: "800",
+		letterSpacing: -1,
+	},
+	heroStateTiny: { fontSize: 29 },
+	heroSubtitle: {
+		color: COLORS.muted,
+		fontSize: 13,
+		lineHeight: 18,
+		textAlign: "center",
+	},
+	countdownBar: {
+		backgroundColor: "#102B32",
+		borderColor: "#356056",
+		borderWidth: 1,
+		paddingVertical: 8,
+		paddingHorizontal: 15,
+		borderRadius: 12,
+		flexDirection: "row",
+		alignItems: "center",
+		gap: 9,
+		marginTop: 3,
+	},
+	countdownBarTiny: { paddingVertical: 5 },
+	countdownNumber: {
+		color: COLORS.accent,
+		fontWeight: "800",
+		fontSize: 23,
+		fontVariant: ["tabular-nums"],
+	},
+	countdownNumberTiny: { fontSize: 19 },
+	countdownCaption: { color: COLORS.muted, fontSize: 12 },
+	timerHeader: {
+		flexDirection: "row",
+		alignItems: "center",
+		justifyContent: "space-between",
+	},
+	timerHeaderTitle: { flexDirection: "row", gap: 7, alignItems: "center" },
+	sectionTitle: { color: COLORS.white, fontSize: 16, fontWeight: "800" },
+	sectionCaption: { color: COLORS.muted, fontSize: 11 },
 	chips: {
 		flexDirection: "row",
 		flexWrap: "wrap",
-		gap: 8,
+		justifyContent: "space-between",
+		rowGap: 7,
 	},
 	chip: {
-		paddingHorizontal: 14,
+		width: "23%",
 		paddingVertical: 10,
-		borderRadius: 20,
-		backgroundColor: "#eef0f4",
-	},
-	chipSelected: {
-		backgroundColor: "#172033",
-	},
-	chipText: {
-		color: "#445066",
-		fontWeight: "500",
-	},
-	chipTextSelected: {
-		color: "#ffffff",
-	},
-	fieldLabel: {
-		fontSize: 13,
-		color: "#697386",
-	},
-	input: {
-		borderWidth: 1,
-		borderColor: "#dce0e6",
-		backgroundColor: "#ffffff",
-		padding: 14,
 		borderRadius: 10,
-		fontSize: 16,
-		color: "#172033",
-	},
-	actions: {
-		flexDirection: "row",
-		gap: 12,
-	},
-	actionButton: {
-		flex: 1,
-		alignItems: "center",
-	},
-	primaryButton: {
-		backgroundColor: "#187b4a",
-		padding: 16,
-		borderRadius: 12,
-		alignItems: "center",
-	},
-	primaryButtonText: {
-		color: "#ffffff",
-		fontWeight: "700",
-		fontSize: 16,
-	},
-	offButton: {
-		backgroundColor: "#ffffff",
 		borderWidth: 1,
-		borderColor: "#dce0e6",
-		borderRadius: 12,
-		padding: 16,
+		borderColor: "#2F4858",
+		backgroundColor: COLORS.surface2,
+		justifyContent: "center",
+		alignItems: "center",
 	},
-	offButtonText: {
-		color: "#b42318",
+	chipTiny: { paddingVertical: 7 },
+	chipSelected: {
+		backgroundColor: COLORS.accent,
+		borderColor: COLORS.accent,
+	},
+	chipText: { color: "#C3D2DC", fontSize: 12, fontWeight: "700" },
+	chipTextSelected: { color: COLORS.accentDark },
+
+	actionDock: { gap: 8, paddingTop: 4 },
+	feedback: {
+		height: 22,
+		flexDirection: "row",
+		gap: 8,
+		alignItems: "center",
+		justifyContent: "center",
+	},
+	feedbackText: {
+		color: COLORS.muted,
+		fontSize: 12,
+		flexShrink: 1,
+		textAlign: "center",
+	},
+	actions: { flexDirection: "row", gap: 10 },
+	onButton: {
+		flex: 1.1,
+		minHeight: 54,
+		backgroundColor: COLORS.accent,
+		borderRadius: 14,
+		flexDirection: "row",
+		justifyContent: "center",
+		alignItems: "center",
+		gap: 8,
+	},
+	onButtonText: { color: COLORS.accentDark, fontSize: 16, fontWeight: "800" },
+	offButton: {
+		flex: 1,
+		minHeight: 54,
+		borderRadius: 14,
+		borderWidth: 1,
+		borderColor: COLORS.border,
+		backgroundColor: COLORS.surface,
+		flexDirection: "row",
+		justifyContent: "center",
+		alignItems: "center",
+		gap: 8,
+	},
+	offButtonText: { color: COLORS.white, fontSize: 16, fontWeight: "800" },
+	buttonDimmed: { opacity: 0.45 },
+
+	modalOverlay: {
+		flex: 1,
+		justifyContent: "center",
+		paddingHorizontal: 26,
+		backgroundColor: "rgba(0,0,0,0.72)",
+	},
+	modalCard: {
+		backgroundColor: COLORS.surface,
+		padding: 21,
+		borderRadius: 20,
+		borderWidth: 1,
+		borderColor: COLORS.border,
+		gap: 15,
+	},
+	modalTitle: { color: COLORS.white, fontWeight: "800", fontSize: 20 },
+	modalDescription: { color: COLORS.muted, fontSize: 13, lineHeight: 19 },
+	modalInput: {
+		color: COLORS.white,
+		fontSize: 22,
 		fontWeight: "700",
+		backgroundColor: COLORS.background,
+		borderColor: COLORS.border,
+		borderWidth: 1,
+		borderRadius: 13,
+		paddingVertical: 12,
+		paddingHorizontal: 16,
+	},
+	modalButtons: { flexDirection: "row", gap: 10 },
+	modalCancel: {
+		flex: 1,
+		minHeight: 48,
+		borderRadius: 12,
+		borderWidth: 1,
+		borderColor: COLORS.border,
+		alignItems: "center",
+		justifyContent: "center",
+	},
+	modalCancelText: { color: COLORS.white, fontWeight: "700" },
+	modalSave: {
+		flex: 1,
+		minHeight: 48,
+		borderRadius: 12,
+		backgroundColor: COLORS.accent,
+		alignItems: "center",
+		justifyContent: "center",
+	},
+	modalSaveText: { color: COLORS.accentDark, fontWeight: "800" },
+
+	// Login preservado.
+	loginContainer: { width: "100%", paddingHorizontal: 27, gap: 16 },
+	loginIcon: {
+		width: 70,
+		height: 70,
+		alignItems: "center",
+		justifyContent: "center",
+		borderRadius: 23,
+		backgroundColor: COLORS.surface,
+		borderWidth: 1,
+		borderColor: COLORS.border,
+		marginBottom: 12,
+	},
+	loginTitle: {
+		color: COLORS.white,
+		fontSize: 36,
+		lineHeight: 42,
+		fontWeight: "800",
+		letterSpacing: -1.2,
+	},
+	subtitle: { color: COLORS.muted, lineHeight: 21, fontSize: 15 },
+	loginFields: { gap: 12, marginTop: 18 },
+	input: {
+		color: COLORS.white,
+		fontSize: 16,
+		backgroundColor: COLORS.surface,
+		borderColor: COLORS.border,
+		borderWidth: 1,
+		padding: 16,
+		borderRadius: 15,
+	},
+	loginButton: {
+		backgroundColor: COLORS.accent,
+		borderRadius: 16,
+		minHeight: 58,
+		alignItems: "center",
+		justifyContent: "center",
+		flexDirection: "row",
+		gap: 10,
+		marginTop: 5,
+	},
+	loginButtonText: {
+		color: COLORS.accentDark,
+		fontWeight: "800",
 		fontSize: 16,
 	},
-	disabled: {
-		opacity: 0.4,
-	},
-	warning: {
-		color: "#b26a12",
-		fontSize: 12,
-	},
-	error: {
-		color: "#b42318",
-		fontSize: 13,
-	},
-	logout: {
-		alignItems: "center",
-		padding: 12,
-	},
-	logoutText: {
-		color: "#697386",
+	errorText: { color: COLORS.red, fontSize: 13 },
+
+	dashboardTiny: {
+		paddingHorizontal: 12,
+		paddingTop: 6,
+		paddingBottom: 8,
+		gap: 8,
 	},
 });

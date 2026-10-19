@@ -27,7 +27,7 @@ const uint32_t STATE_RETRY_MS = 3000;
 const uint32_t STATE_TIMEOUT_MS = 20000;
 const int64_t MAX_COMMAND_AGE_MS = 120000; // So liga se criado ha <= 2 min
 const int64_t MAX_FUTURE_SKEW_MS = 15000;
-const uint32_t HEARTBEAT_INTERVAL_MS = 30000;
+const uint32_t HEARTBEAT_INTERVAL_MS = 15000;
 
 void processData(AsyncResult &result);
 
@@ -86,25 +86,30 @@ void onTimeUpdated(bool fromSNTP) {
 }
 
 void startNtp() {
-  Serial.printf(
-    "NTP: tentando servidor %s\n",
-    ntpServers[ntpIndex]
+  Serial.println("NTP: iniciando sincronizacao...");
+
+  configTime(
+    0, 0,
+    "200.160.7.196",
+    "200.160.7.186",
+    "time.google.com"
   );
 
-  configTime(0, 0, ntpServers[ntpIndex]);
-
-  ntpAttemptAt = millis();
   ntpStarted = true;
+  ntpAttemptAt = millis();
 }
 
 void maintainNtp() {
+  if (!ntpStarted || ntpConfirmed) return;
   if (WiFi.status() != WL_CONNECTED) return;
-  if (ntpConfirmed || firebaseStarted) return;
-  if (!ntpStarted) return;
 
-  if ((uint32_t)(millis() - ntpAttemptAt) >= 10000) {
-    ntpIndex = (ntpIndex + 1) % 3;
-    startNtp();
+  static uint32_t lastLog = 0;
+
+  if ((uint32_t)(millis() - ntpAttemptAt) > 15000 &&
+      (uint32_t)(millis() - lastLog) > 15000) {
+
+    lastLog = millis();
+    Serial.println("NTP: aguardando resposta...");
   }
 }
 
@@ -393,7 +398,6 @@ void maintainWiFi() {
       if (!firebaseStarted) {
         Serial.println("Iniciando sincronizacao NTP...");
 
-        ntpIndex = 0;
         ntpConfirmed = false;
         startNtp();
       }

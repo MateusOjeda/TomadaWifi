@@ -1,25 +1,41 @@
 {
-  "expo": {
-    "name": "controle-rele-app",
-    "slug": "controle-rele-app",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "ios": {
-      "supportsTablet": true
-    },
-    "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
-  }
+	"expo": {
+		"name": "controle-rele-app",
+		"slug": "controle-rele-app",
+		"version": "1.0.0",
+		"orientation": "portrait",
+		"icon": "./assets/icon.png",
+		"backgroundColor": "#08131E",
+		"userInterfaceStyle": "dark",
+		"ios": {
+			"supportsTablet": true
+		},
+		"android": {
+			"adaptiveIcon": {
+				"backgroundColor": "#E6F4FE",
+				"foregroundImage": "./assets/android-icon-foreground.png",
+				"backgroundImage": "./assets/android-icon-background.png",
+				"monochromeImage": "./assets/android-icon-monochrome.png"
+			},
+			"predictiveBackGestureEnabled": false,
+			"package": "com.mateusojeda.controlereleapp"
+		},
+		"web": {
+			"favicon": "./assets/favicon.png"
+		},
+		"plugins": [
+			[
+				"expo-navigation-bar",
+				{
+					"hidden": true,
+					"enforceContrast": false
+				}
+			]
+		],
+		"extra": {
+			"eas": {
+				"projectId": "4ab449c7-3b70-4e6f-9f31-5e27513f31e4"
+			}
+		}
+	}
 }
