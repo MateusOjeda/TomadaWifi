@@ -45,9 +45,7 @@ const COLORS = {
 	red: "#FF8F8F",
 };
 
-// Para heartbeat a cada 30 segundos, dê margem a atrasos de rede.
-// Se o firmware publicar a cada 15 s, você pode usar 35000.
-const HEARTBEAT_TIMEOUT_MS = 60000;
+const HEARTBEAT_TIMEOUT_MS = 30000;
 const DURATIONS = [0, 10, 20, 30, 40, 50, 60];
 
 function formatTime(seconds: number) {

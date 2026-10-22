@@ -8,6 +8,12 @@
 #include <time.h>
 #include "FirebaseCA.h"
 #include <coredecls.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <sys/time.h>
+
+WiFiUDP ntpUDP;
+NTPClient ntpClient(ntpUDP, "200.160.7.196", 0, 60000);
 
 // ----- PREENCHA AQUI -----
 #define WIFI_SSID "OJEDA"
@@ -67,52 +73,92 @@ const char* ntpServers[] = {
   "time.google.com"
 };
 
-uint8_t ntpIndex = 0;
 uint32_t ntpAttemptAt = 0;
 
 bool ntpStarted = false;
 bool ntpConfirmed = false;
 
-void onTimeUpdated(bool fromSNTP) {
-  if (!fromSNTP) return;
+bool syncNTP() {
 
-  ntpConfirmed = true;
+  Serial.println("Sincronizando NTP...");
 
-  Serial.println("NTP: sincronizacao confirmada!");
-  Serial.printf(
-    "Timestamp: %lu\n",
-    (unsigned long)time(nullptr)
-  );
-}
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
 
-void startNtp() {
-  Serial.println("NTP: iniciando sincronizacao...");
-
-  configTime(
-    0, 0,
+  const char* servers[] = {
     "200.160.7.196",
     "200.160.7.186",
     "time.google.com"
-  );
+  };
 
-  ntpStarted = true;
-  ntpAttemptAt = millis();
+  for (int i = 0; i < 3; i++) {
+
+    Serial.print("NTP: ");
+    Serial.println(servers[i]);
+
+    ntpClient.setPoolServerName(servers[i]);
+
+    if (!ntpClient.forceUpdate()) {
+      continue;
+    }
+
+    time_t epoch = ntpClient.getEpochTime();
+
+    if (epoch <= 1700000000) {
+      continue;
+    }
+
+    struct timeval tv = {};
+    tv.tv_sec = epoch;
+
+    if (settimeofday(&tv, nullptr) != 0) {
+      continue;
+    }
+
+    ntpConfirmed = true;
+
+    Serial.printf(
+      "NTP sincronizado! UTC epoch: %lu\n",
+      (unsigned long)time(nullptr)
+    );
+
+    return true;
+  }
+
+  Serial.println("Falha em todos os servidores NTP.");
+  return false;
+}
+
+void startNtp() {
+
+  if (!ntpStarted) {
+    ntpClient.begin();
+    ntpStarted = true;
+  }
+
+  // Permite uma tentativa imediata.
+  ntpAttemptAt = millis() - 15000UL;
 }
 
 void maintainNtp() {
-  if (!ntpStarted || ntpConfirmed) return;
-  if (WiFi.status() != WL_CONNECTED) return;
 
-  static uint32_t lastLog = 0;
-
-  if ((uint32_t)(millis() - ntpAttemptAt) > 15000 &&
-      (uint32_t)(millis() - lastLog) > 15000) {
-
-    lastLog = millis();
-    Serial.println("NTP: aguardando resposta...");
+  if (!ntpStarted || ntpConfirmed) {
+    return;
   }
-}
 
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  if ((uint32_t)(millis() - ntpAttemptAt) < 15000) {
+    return;
+  }
+
+  ntpAttemptAt = millis();
+
+  syncNTP();
+}
 
 uint64_t nowEpochMs() {
   return (uint64_t)time(nullptr) * 1000ULL;
@@ -437,7 +483,6 @@ void startFirebase() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  settimeofday_cb(onTimeUpdated);
 
   digitalWrite(RELAY_PIN, RELAY_OFF);
   pinMode(RELAY_PIN, OUTPUT);
